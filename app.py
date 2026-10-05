@@ -10,7 +10,7 @@ import re
 # =========================================================================
 # CONFIGURAÇÃO DA PÁGINA
 # =========================================================================
-st.set_page_config(page_title="Cherry Picking - Natura", page_icon="💵", layout="wide")
+st.set_page_config(page_title="Cherry Picking - Frota Dedicada Natura", page_icon="🚚", layout="wide")
 
 st.markdown(
     """
@@ -21,18 +21,15 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-st.title("💵 Agente de Sourcing: Cherry Picking")
-st.write("Consolidação automática de cotações e modelos de precificação em lote.")
+st.title("🚚 Sourcing Agent: Cherry Picking - Frota Dedicada (Murici)")
+st.write("Consolidação de Propostas e Formação de Preço por Rota/LineHaul.")
 
 arquivos_carregados = st.file_uploader(
-    "Suba todas as cotações aqui (.xlsx ou .csv):", 
+    "Suba as planilhas dos fornecedores (.xlsx ou .csv):", 
     type=["xlsx", "csv"], 
     accept_multiple_files=True
 )
 
-# =========================================================================
-# FUNÇÕES DE HIGIENIZAÇÃO DE DADOS
-# =========================================================================
 def padronizar_texto(texto):
     if pd.isna(texto) or texto is None:
         return ""
@@ -63,9 +60,9 @@ def limpar_valor(val):
         return None
 
 # =========================================================================
-# IDENTIFICAÇÃO ULTRA-TOLERANTE DE CABEÇALHOS E DADOS
+# LEITURA E PROCESSAMENTO DA TABELA DE ROTAS (FROTA DEDICADA)
 # =========================================================================
-def processar_modelo_precificacao(file_obj, nome_arquivo):
+def processar_aba_frota_dedicada(file_obj, nome_arquivo):
     dfs_extraidos = []
     
     if nome_arquivo.endswith(".csv"):
@@ -73,144 +70,87 @@ def processar_modelo_precificacao(file_obj, nome_arquivo):
         dfs_extraidos.append((nome_arquivo, df_raw))
     else:
         xl = pd.ExcelFile(file_obj)
-        
-        # Analisa todas as abas, priorizando abas com palavras-chave no nome
-        abas_ordenadas = sorted(
-            xl.sheet_names, 
-            key=lambda s: any(k in s.lower() for k in ["modelo", "precifica", "template", "cotacao", "cotação", "tabela", "frota", "proposta"]), 
-            reverse=True
-        )
-        
-        for sheet in abas_ordenadas:
+        abas_alvo = [s for s in xl.sheet_names if any(k in s.lower() for k in ["modelo", "precifica", "frota", "murici", "rotas", "template"])]
+        if not abas_alvo:
+            abas_alvo = xl.sheet_names
+            
+        for sheet in abas_alvo:
             try:
                 df_raw = pd.read_excel(file_obj, sheet_name=sheet, header=None)
             except Exception:
                 continue
                 
-            if df_raw.empty or len(df_raw) < 2:
-                continue
+            if df_raw.empty: continue
 
-            # Localiza a linha do cabeçalho varrendo as primeiras 30 linhas
+            # Procura a linha que contém a tabela de Rotas (CD Origem, Rota_LineHaul, Km mês, etc)
             header_row = None
-            max_matches = 0
-            
-            palavras_chave_gerais = [
-                "regi", "cd", "local", "rota", "origem", "uf", "cidade", "estado", "cluster", "hub", "unidade", "site",
-                "carg", "funç", "func", "veic", "veículo", "item", "descri", "equipamento", "modelo", "tipo", "modalidade", "perfil",
-                "turn", "horar", "jornada", "período", "escala",
-                "valor", "preço", "preco", "custo", "diaria", "diária", "total", "tarifa", "frete", "r$"
-            ]
-            
-            for r_idx in range(min(30, len(df_raw))):
+            for r_idx in range(len(df_raw)):
                 row_vals = [padronizar_texto(v) for v in df_raw.iloc[r_idx].values if pd.notna(v)]
-                matches = sum(1 for val in row_vals for kw in palavras_chave_gerais if kw.upper() in val)
-                
-                if matches > max_matches and matches >= 2:
-                    max_matches = matches
+                if any("ROTA" in v for v in row_vals) and any("ORIGEM" in v or "KM" in v or "LINEHAUL" in v for v in row_vals):
                     header_row = r_idx
-
+                    break
+            
             if header_row is None:
                 header_row = 0
 
-            # Lê a folha com o cabeçalho identificado
             df_sheet = pd.read_excel(file_obj, sheet_name=sheet, header=header_row)
-            
-            # Se a linha seguinte também contiver palavras de cabeçalho (cabeçalhos mesclados em 2 linhas)
-            if header_row + 1 < len(df_raw):
-                next_row_vals = [padronizar_texto(v) for v in df_raw.iloc[header_row + 1].values if pd.notna(v)]
-                matches_next = sum(1 for val in next_row_vals for kw in palavras_chave_gerais if kw.upper() in val)
-                if matches_next >= 2:
-                    novas_colunas = []
-                    for c_idx, col in enumerate(df_sheet.columns):
-                        val1 = str(col) if not str(col).startswith("Unnamed:") else ""
-                        val2 = str(df_raw.iloc[header_row + 1, c_idx]) if c_idx < len(df_raw.columns) and pd.notna(df_raw.iloc[header_row + 1, c_idx]) else ""
-                        nome_comb = f"{val1} {val2}".strip()
-                        novas_colunas.append(nome_comb if nome_comb else f"Coluna_{c_idx}")
-                    df_sheet.columns = novas_colunas
-                    df_sheet = df_sheet.iloc[1:].reset_index(drop=True)
-
             label = f"{nome_arquivo} ({sheet.strip()})" if len(xl.sheet_names) > 1 else nome_arquivo
             dfs_extraidos.append((label, df_sheet))
 
     dfs_normalizados = []
-    
-    kw_reg = ["regi", "cd", "local", "filial", "origem", "rota", "uf", "cidade", "estado", "cluster", "hub", "unidade", "site", "atendimento"]
-    kw_item = ["carg", "funç", "func", "veic", "veículo", "item", "descri", "equipamento", "modelo", "tipo", "modalidade", "perfil", "operação"]
-    kw_turno = ["turn", "horar", "jornada", "período", "escala", "franquia"]
-    kw_bad = ["%", "taxa", "imposto", "pis", "iss", "icms", "irrf", "margem", "bdi", "markup", "desconto"]
 
     for label, df in dfs_extraidos:
         df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')].dropna(how='all')
-        if df.empty:
-            continue
+        if df.empty: continue
             
-        col_reg, col_item, col_turno, col_valor = None, None, None, None
+        col_rota, col_origem, col_dest, col_valor = None, None, None, None
         
         for col in df.columns:
             c_lower = str(col).strip().lower()
-            if any(k in c_lower for k in kw_reg) and not col_reg:
-                col_reg = col
-            elif any(k in c_lower for k in kw_item) and not col_item:
-                col_item = col
-            elif any(k in c_lower for k in kw_turno) and not col_turno:
-                col_turno = col
+            if any(k in c_lower for k in ["rota_linehaul", "linehaul", "destino", "rota"]):
+                col_dest = col
+            elif any(k in c_lower for k in ["origem", "cd origem", "cd"]):
+                col_origem = col
 
-        # Prioridade 1: Colunas de valor total/final
+        # Identifica a coluna de Faturamento / Preço Final
         for col in df.columns:
             c_lower = str(col).strip().lower()
-            if any(k in c_lower for k in ["total", "final", "global", "mensal"]) and not any(bad in c_lower for bad in kw_bad):
+            if any(k in c_lower for k in ["faturamento", "preço final", "preco final", "valor total", "total rota"]):
                 col_valor = col
                 break
-                
-        # Prioridade 2: Qualquer coluna de preço/diária/tarifa
+
         if not col_valor:
             for col in df.columns:
                 c_lower = str(col).strip().lower()
-                if any(g in c_lower for g in ["valor", "preço", "preco", "custo", "diaria", "diária", "tarifa", "frete", "r$"]) and not any(bad in c_lower for bad in kw_bad):
-                    col_valor = col
-                    break
-
-        # Fallback: Seleciona a primeira coluna numérica com valores reais
-        if not col_valor:
-            for col in df.columns:
-                if col in [col_reg, col_item, col_turno]:
+                if any(k in c_lower for k in ["margem", "imposto", "custo fixo", "custo variavel"]):
                     continue
-                vals_col = df[col].apply(limpar_valor).dropna()
-                if len(vals_col) > 0 and vals_col.mean() > 1:
+                if any(k in c_lower for k in ["valor", "preço", "preco", "total", "r$"]):
                     col_valor = col
                     break
 
-        # Fallback: Seleciona a primeira coluna de texto se a região não for encontrada
-        if not col_reg and len(df.columns) > 0:
-            for col in df.columns:
-                if col != col_valor:
-                    col_reg = col
-                    break
-
-        if col_reg and col_valor:
+        if col_dest and col_valor:
             df_sub = pd.DataFrame()
-            df_sub["Região / Local"] = df[col_reg].apply(padronizar_texto)
-            df_sub["Item / Cargo / Veículo"] = df[col_item].apply(padronizar_texto) if col_item else "PADRÃO"
-            df_sub["Turno / Detalhe"] = df[col_turno].apply(padronizar_texto) if col_turno else "GERAL"
+            df_sub["CD Origem"] = df[col_origem].apply(padronizar_texto) if col_origem else "MURICI"
+            df_sub["Rota / Destino"] = df[col_dest].apply(padronizar_texto)
             df_sub[label] = df[col_valor].apply(limpar_valor)
             
-            df_sub = df_sub.dropna(subset=["Região / Local", label])
-            df_sub = df_sub[~df_sub["Região / Local"].isin(["", "NAN", "TOTAL", "REGIAO", "LOCAL", "SUBTOTAL"])]
+            df_sub = df_sub.dropna(subset=["Rota / Destino", label])
+            df_sub = df_sub[~df_sub["Rota / Destino"].isin(["", "NAN", "TOTAL", "ROTA_LINEHAUL", "DESTINO"])]
             
             if not df_sub.empty:
                 dfs_normalizados.append(df_sub)
-            
+
     return dfs_normalizados
 
 # =========================================================================
-# EXPORTAÇÃO EXCEL
+# EXPORTAÇÃO EXCEL COM FORMATAÇÃO NATURA
 # =========================================================================
 def estilizar_planilha_excel(df, fornecedores):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Cherry Picking"
+    ws.title = "Cherry Picking Rotas"
     
-    colunas_chave = ["Região / Local", "Item / Cargo / Veículo", "Turno / Detalhe"]
+    colunas_chave = ["CD Origem", "Rota / Destino"]
     colunas_completas = colunas_chave + fornecedores + ["Melhor Preço", "Fornecedor Vencedor"]
     ws.append(colunas_completas)
     
@@ -231,22 +171,21 @@ def estilizar_planilha_excel(df, fornecedores):
 
     row_num = 2
     for _, row in df.iterrows():
-        ws.cell(row=row_num, column=1, value=str(row.get("Região / Local", "")).title())
-        ws.cell(row=row_num, column=2, value=str(row.get("Item / Cargo / Veículo", "")).title())
-        ws.cell(row=row_num, column=3, value=str(row.get("Turno / Detalhe", "")).title())
+        ws.cell(row=row_num, column=1, value=str(row.get("CD Origem", "")).title())
+        ws.cell(row=row_num, column=2, value=str(row.get("Rota / Destino", "")).title())
         
-        for col_idx, forn in enumerate(fornecedores, start=4):
+        for col_idx, forn in enumerate(fornecedores, start=3):
             ws.cell(row=row_num, column=col_idx, value=row.get(forn, None))
         
-        col_let_start = get_column_letter(4)
-        col_let_end = get_column_letter(3 + len(fornecedores))
+        col_let_start = get_column_letter(3)
+        col_let_end = get_column_letter(2 + len(fornecedores))
         col_let_min = get_column_letter(idx_min_col)
         
         ws.cell(row=row_num, column=idx_min_col, value=f"=MIN({col_let_start}{row_num}:{col_let_end}{row_num})")
         ws.cell(row=row_num, column=idx_winner_col, value=f'=INDEX(${col_let_start}$1:${col_let_end}$1, MATCH({col_let_min}{row_num}, {col_let_start}{row_num}:{col_let_end}{row_num}, 0))')
         
         coluna_vencedora_python = row.get("Fornecedor Vencedor")
-        col_idx_vencedora = fornecedores.index(coluna_vencedora_python) + 4 if coluna_vencedora_python in fornecedores else None
+        col_idx_vencedora = fornecedores.index(coluna_vencedora_python) + 3 if coluna_vencedora_python in fornecedores else None
         
         winner_fill = PatternFill(start_color="E6F0EA", end_color="E6F0EA", fill_type="solid")
         winner_font = Font(name="Poppins", size=10, bold=True, color="1E3D2F")
@@ -261,7 +200,7 @@ def estilizar_planilha_excel(df, fornecedores):
                 cell.fill = winner_fill
                 cell.font = winner_font
                 
-            if col_idx > 3:
+            if col_idx >= 3:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
                 if col_idx <= idx_min_col:
                     cell.number_format = 'R$ #,##0.00'
@@ -270,7 +209,7 @@ def estilizar_planilha_excel(df, fornecedores):
         row_num += 1
 
     for col in ws.columns:
-        ws.column_dimensions[get_column_letter(col[0].column)].width = 22
+        ws.column_dimensions[get_column_letter(col[0].column)].width = 25
         
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -278,81 +217,66 @@ def estilizar_planilha_excel(df, fornecedores):
     return buffer
 
 # =========================================================================
-# INTERFACE E FLUXO DE EXECUÇÃO
+# INTERFACE STREAMLIT
 # =========================================================================
 if arquivos_carregados:
-    st.info(f"📁 **{len(arquivos_carregados)} arquivo(s)** selecionado(s) para processamento.")
+    st.info(f"📁 **{len(arquivos_carregados)} arquivo(s)** carregado(s).")
     
-    if st.button("🚀 Gerar Consolidação Cherry Picking"):
+    if st.button("🚀 Processar Cherry Picking por Rota"):
         dfs_processados = []
         relatorio_erros = []
         
         progress_bar = st.progress(0)
-        status_text = st.empty()
         
         for idx, arquivo in enumerate(arquivos_carregados):
             nome_clean = arquivo.name.split(".")[0].replace("Template_para_Precificação_-_", "").replace("Cópia_de_", "").strip()
-            status_text.text(f"⏳ Processando arquivo {idx+1} de {len(arquivos_carregados)}: {arquivo.name}...")
-            
             try:
-                sub_dfs = processar_modelo_precificacao(arquivo, nome_clean)
+                sub_dfs = processar_aba_frota_dedicada(arquivo, nome_clean)
                 if sub_dfs:
                     dfs_processados.extend(sub_dfs)
                 else:
-                    relatorio_erros.append((arquivo.name, "Nenhuma tabela com dados válidos pôde ser estruturada nesta planilha."))
+                    relatorio_erros.append((arquivo.name, "Tabela de rotas não localizada."))
             except Exception as e:
-                relatorio_erros.append((arquivo.name, f"Erro de leitura: {str(e)}"))
+                relatorio_erros.append((arquivo.name, f"Erro: {str(e)}"))
                 
             progress_bar.progress((idx + 1) / len(arquivos_carregados))
             
-        status_text.empty()
         progress_bar.empty()
         
-        if relatorio_erros:
-            with st.expander("⚠️ Detalhes de arquivos ignorados ou não identificados"):
-                for arq, msg in relatorio_erros:
-                    st.warning(f"**{arq}**: {msg}")
-
         if dfs_processados:
             colunas_fornecedores = [list(d.columns)[-1] for d in dfs_processados]
-            st.success(f"✅ {len(colunas_fornecedores)} proposta(s)/aba(s) consolidadas com sucesso!")
             
-            with st.spinner("⚡ Unificando bases e realizando o Cherry Picking..."):
-                df_consolidado = dfs_processados[0]
-                for df_prox in dfs_processados[1:]:
-                    df_consolidado = pd.merge(
-                        df_consolidado, df_prox, 
-                        on=["Região / Local", "Item / Cargo / Veículo", "Turno / Detalhe"], 
-                        how="outer"
-                    )
-
-                df_consolidado = df_consolidado.sort_values(by=["Região / Local", "Item / Cargo / Veículo"]).reset_index(drop=True)
-
-                def calc_melhor_preco(row):
-                    vals = [row[c] for c in colunas_fornecedores if pd.notna(row[c]) and row[c] is not None]
-                    return min(vals) if vals else None
-
-                def calc_fornecedor_vencedor(row):
-                    best = calc_melhor_preco(row)
-                    if best is None: return None
-                    for c in colunas_fornecedores:
-                        if row[c] == best: return c
-                    return None
-
-                df_consolidado["Melhor Preço"] = df_consolidado.apply(calc_melhor_preco, axis=1)
-                df_consolidado["Fornecedor Vencedor"] = df_consolidado.apply(calc_fornecedor_vencedor, axis=1)
-
-                buffer_excel = estilizar_planilha_excel(df_consolidado, colunas_fornecedores)
-
-                st.balloons()
-                st.write("📊 **Prévia dos Dados Consolidados:**")
-                st.dataframe(df_consolidado, use_container_width=True)
-
-                st.download_button(
-                    label="📥 Baixar Consolidação Final (.xlsx)",
-                    data=buffer_excel,
-                    file_name="Cherry_Picking_Consolidado_Final.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            df_consolidado = dfs_processados[0]
+            for df_prox in dfs_processados[1:]:
+                df_consolidado = pd.merge(
+                    df_consolidado, df_prox, 
+                    on=["CD Origem", "Rota / Destino"], 
+                    how="outer"
                 )
-        else:
-            st.error("❌ Nenhum dado pôde ser extraído das planilhas enviadas. Verifique se os arquivos contêm dados numéricos de cotação.")
+
+            def calc_melhor_preco(row):
+                vals = [row[c] for c in colunas_fornecedores if pd.notna(row[c]) and row[c] is not None]
+                return min(vals) if vals else None
+
+            def calc_fornecedor_vencedor(row):
+                best = calc_melhor_preco(row)
+                if best is None: return None
+                for c in colunas_fornecedores:
+                    if row[c] == best: return c
+                return None
+
+            df_consolidado["Melhor Preço"] = df_consolidado.apply(calc_melhor_preco, axis=1)
+            df_consolidado["Fornecedor Vencedor"] = df_consolidado.apply(calc_fornecedor_vencedor, axis=1)
+
+            buffer_excel = estilizar_planilha_excel(df_consolidado, colunas_fornecedores)
+
+            st.balloons()
+            st.success("✨ Cherry Picking de Rotas gerado com sucesso!")
+            st.dataframe(df_consolidado, use_container_width=True)
+
+            st.download_button(
+                label="📥 Baixar Planilha Consolidada (.xlsx)",
+                data=buffer_excel,
+                file_name="Cherry_Picking_Frota_Dedicada_Murici.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
