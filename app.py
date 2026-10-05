@@ -10,7 +10,7 @@ import re
 # =========================================================================
 # CONFIGURAÇÃO DA PÁGINA
 # =========================================================================
-st.set_page_config(page_title="Cherry Picking Universal - Natura", page_icon="💵", layout="wide")
+st.set_page_config(page_title="Cherry Picking - Natura", page_icon="💵", layout="wide")
 
 st.markdown(
     """
@@ -21,26 +21,20 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-st.title("💵 Agente de Sourcing: Cherry Picking Universal")
-st.write("Suba planilhas de **qualquer categoria** (Mão de Obra, Frota, Serviços, Peças) para consolidação automática.")
+st.title("💵 Agente de Sourcing: Cherry Picking (Alta Performance)")
+st.write("Consolidação automática rápida para grandes lotes de cotações.")
 
-# Inicialização da memória de sessão do Streamlit
 if "df_consolidado_final" not in st.session_state:
     st.session_state.df_consolidado_final = None
 if "buffer_excel_final" not in st.session_state:
     st.session_state.buffer_excel_final = None
-if "fornecedores_processados" not in st.session_state:
-    st.session_state.fornecedores_processados = []
 
 arquivos_carregados = st.file_uploader(
-    "Suba aqui as cotações (.xlsx ou .csv):", 
+    "Suba as cotações aqui (.xlsx ou .csv):", 
     type=["xlsx", "csv"], 
     accept_multiple_files=True
 )
 
-# =========================================================================
-# FUNÇÕES DE HIGIENIZAÇÃO DE DADOS
-# =========================================================================
 def padronizar_texto(texto):
     if pd.isna(texto) or texto is None:
         return ""
@@ -71,44 +65,44 @@ def limpar_valor(val):
         return None
 
 # =========================================================================
-# LEITURA INTELIGENTE E ADAPTÁVEL
+# PROCESSAMENTO OTIMIZADO (LEITURA RÁPIDA)
 # =========================================================================
-def processar_planilha_generica(file_obj, nome_arquivo):
+def processar_planilha_otimizada(file_obj, nome_arquivo):
     dfs_extraidos = []
     
     if nome_arquivo.endswith(".csv"):
-        df_raw = pd.read_csv(file_obj)
+        df_raw = pd.read_csv(file_obj).dropna(how='all')
         dfs_extraidos.append((nome_arquivo, df_raw))
     else:
         xl = pd.ExcelFile(file_obj)
-        for sheet in xl.sheet_names:
+        # Prioriza abas relevantes para evitar ler abas pesadas de instruções/anexos
+        abas_alvo = [s for s in xl.sheet_names if any(k in s.lower() for k in ["modelo", "precifica", "template", "frota", "cotacao", "cotação", "tabela"])]
+        if not abas_alvo:
+            abas_alvo = xl.sheet_names[:2] # Limita às 2 primeiras abas se não achar nome correspondente
+            
+        for sheet in abas_alvo:
             try:
-                df_raw = pd.read_excel(file_obj, sheet_name=sheet, header=None)
+                # Lê apenas as primeiras 35 linhas para identificar o cabeçalho rapidamente
+                df_preview = pd.read_excel(file_obj, sheet_name=sheet, nrows=35, header=None)
             except Exception:
                 continue
                 
-            if df_raw.empty or len(df_raw) < 2: 
+            if df_preview.empty: 
                 continue
 
-            # Localiza a linha de cabeçalho buscando por qualquer palavra descritiva ou financeira
             header_row = 0
             max_matches = 0
+            kw_gerais = ["cd", "local", "rota", "origem", "destino", "regi", "item", "carg", "veic", "valor", "preço", "preco", "custo", "diaria", "total", "r$", "faturamento"]
             
-            kw_gerais = [
-                "regi", "cd", "local", "rota", "origem", "destino", "uf", "cidade", "unidade", "site",
-                "carg", "funç", "func", "veic", "veículo", "item", "descri", "perfil", "linha",
-                "turn", "horar", "jornada",
-                "valor", "preço", "preco", "custo", "diaria", "diária", "total", "tarifa", "frete", "r$", "faturamento"
-            ]
-            
-            for r_idx in range(min(30, len(df_raw))):
-                row_vals = [padronizar_texto(v) for v in df_raw.iloc[r_idx].values if pd.notna(v)]
+            for r_idx in range(len(df_preview)):
+                row_vals = [padronizar_texto(v) for v in df_preview.iloc[r_idx].values if pd.notna(v)]
                 matches = sum(1 for val in row_vals for kw in kw_gerais if kw.upper() in val)
                 if matches > max_matches and matches >= 2:
                     max_matches = matches
                     header_row = r_idx
 
-            df_sheet = pd.read_excel(file_obj, sheet_name=sheet, header=header_row)
+            # Lê a tabela a partir da linha do cabeçalho encontrada
+            df_sheet = pd.read_excel(file_obj, sheet_name=sheet, header=header_row).dropna(how='all')
             label = f"{nome_arquivo} ({sheet.strip()})" if len(xl.sheet_names) > 1 else nome_arquivo
             dfs_extraidos.append((label, df_sheet))
 
@@ -120,10 +114,9 @@ def processar_planilha_generica(file_obj, nome_arquivo):
             
         col_desc1, col_desc2, col_valor = None, None, None
         
-        # Identificação flexível da 1ª e 2ª coluna descritiva
         for col in df.columns:
             c_lower = str(col).strip().lower()
-            if any(k in c_lower for k in ["regi", "cd", "local", "rota", "origem", "destino", "uf", "unidade", "item", "carg", "veic"]):
+            if any(k in c_lower for k in ["cd", "local", "rota", "origem", "destino", "regi", "uf", "unidade", "item", "carg", "veic", "funç", "perfil"]):
                 if not col_desc1:
                     col_desc1 = col
                 elif not col_desc2 and col != col_desc1:
@@ -143,7 +136,6 @@ def processar_planilha_generica(file_obj, nome_arquivo):
                     col_valor = col
                     break
 
-        # Fallback de preço: primeira coluna com números
         if not col_valor:
             for col in df.columns:
                 if col in [col_desc1, col_desc2]: continue
@@ -157,12 +149,12 @@ def processar_planilha_generica(file_obj, nome_arquivo):
 
         if col_desc1 and col_valor:
             df_sub = pd.DataFrame()
-            df_sub["Local / Origem / Região"] = df[col_desc1].apply(padronizar_texto)
-            df_sub["Item / Rota / Perfil"] = df[col_desc2].apply(padronizar_texto) if col_desc2 else "GERAL"
+            df_sub["Chave / Local / Origem"] = df[col_desc1].apply(padronizar_texto)
+            df_sub["Item / Rota / Cargo"] = df[col_desc2].apply(padronizar_texto) if col_desc2 else "GERAL"
             df_sub[label] = df[col_valor].apply(limpar_valor)
             
-            df_sub = df_sub.dropna(subset=["Local / Origem / Região", label])
-            df_sub = df_sub[~df_sub["Local / Origem / Região"].isin(["", "NAN", "TOTAL", "SUBTOTAL"])]
+            df_sub = df_sub.dropna(subset=["Chave / Local / Origem", label])
+            df_sub = df_sub[~df_sub["Chave / Local / Origem"].isin(["", "NAN", "TOTAL", "SUBTOTAL"])]
             
             if not df_sub.empty:
                 dfs_normalizados.append(df_sub)
@@ -170,14 +162,14 @@ def processar_planilha_generica(file_obj, nome_arquivo):
     return dfs_normalizados
 
 # =========================================================================
-# ESTILIZAÇÃO DO EXCEL
+# GERADOR EXCEL
 # =========================================================================
 def estilizar_planilha_excel(df, fornecedores):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Cherry Picking"
     
-    colunas_chave = ["Local / Origem / Região", "Item / Rota / Perfil"]
+    colunas_chave = ["Chave / Local / Origem", "Item / Rota / Cargo"]
     colunas_completas = colunas_chave + fornecedores + ["Melhor Preço", "Fornecedor Vencedor"]
     ws.append(colunas_completas)
     
@@ -198,8 +190,8 @@ def estilizar_planilha_excel(df, fornecedores):
 
     row_num = 2
     for _, row in df.iterrows():
-        ws.cell(row=row_num, column=1, value=str(row.get("Local / Origem / Região", "")).title())
-        ws.cell(row=row_num, column=2, value=str(row.get("Item / Rota / Perfil", "")).title())
+        ws.cell(row=row_num, column=1, value=str(row.get("Chave / Local / Origem", "")).title())
+        ws.cell(row=row_num, column=2, value=str(row.get("Item / Rota / Cargo", "")).title())
         
         for col_idx, forn in enumerate(fornecedores, start=3):
             ws.cell(row=row_num, column=col_idx, value=row.get(forn, None))
@@ -244,7 +236,7 @@ def estilizar_planilha_excel(df, fornecedores):
     return buffer
 
 # =========================================================================
-# INTERFACE E FLUXO PRINCIPAL
+# EXECUÇÃO PRINCIPAL
 # =========================================================================
 if arquivos_carregados:
     st.info(f"📁 **{len(arquivos_carregados)} arquivo(s)** prontos para processamento.")
@@ -258,14 +250,14 @@ if arquivos_carregados:
         
         for idx, arquivo in enumerate(arquivos_carregados):
             nome_clean = arquivo.name.split(".")[0].replace("Template_para_Precificação_-_", "").replace("Cópia_de_", "").strip()
-            status_text.text(f"⏳ Lendo arquivo {idx+1} de {len(arquivos_carregados)}: {arquivo.name}...")
+            status_text.text(f"⚡ Lendo lote ({idx+1}/{len(arquivos_carregados)}): {arquivo.name}...")
             
             try:
-                sub_dfs = processar_planilha_generica(arquivo, nome_clean)
+                sub_dfs = processar_planilha_otimizada(arquivo, nome_clean)
                 if sub_dfs:
                     dfs_processados.extend(sub_dfs)
                 else:
-                    relatorio_erros.append((arquivo.name, "Sem colunas válidas de descrição/valor."))
+                    relatorio_erros.append((arquivo.name, "Nenhuma coluna de descrição ou valor identificada."))
             except Exception as e:
                 relatorio_erros.append((arquivo.name, f"Erro: {str(e)}"))
                 
@@ -275,7 +267,7 @@ if arquivos_carregados:
         progress_bar.empty()
         
         if relatorio_erros:
-            with st.expander("⚠️ Arquivos com divergência ou ignorados"):
+            with st.expander("⚠️ Arquivos com avisos ou ignorados"):
                 for arq, msg in relatorio_erros:
                     st.warning(f"**{arq}**: {msg}")
 
@@ -286,11 +278,11 @@ if arquivos_carregados:
             for df_prox in dfs_processados[1:]:
                 df_consolidado = pd.merge(
                     df_consolidado, df_prox, 
-                    on=["Local / Origem / Região", "Item / Rota / Perfil"], 
+                    on=["Chave / Local / Origem", "Item / Rota / Cargo"], 
                     how="outer"
                 )
 
-            df_consolidado = df_consolidado.sort_values(by=["Local / Origem / Região"]).reset_index(drop=True)
+            df_consolidado = df_consolidado.sort_values(by=["Chave / Local / Origem"]).reset_index(drop=True)
 
             def calc_melhor_preco(row):
                 vals = [row[c] for c in colunas_fornecedores if pd.notna(row[c]) and row[c] is not None]
@@ -306,15 +298,12 @@ if arquivos_carregados:
             df_consolidado["Melhor Preço"] = df_consolidado.apply(calc_melhor_preco, axis=1)
             df_consolidado["Fornecedor Vencedor"] = df_consolidado.apply(calc_fornecedor_vencedor, axis=1)
 
-            # SALVA NA SESSÃO DO STREAMLIT PARA NÃO SUMIR AO REFRESH
             st.session_state.df_consolidado_final = df_consolidado
             st.session_state.buffer_excel_final = estilizar_planilha_excel(df_consolidado, colunas_fornecedores)
-            st.session_state.fornecedores_processados = colunas_fornecedores
             
             st.balloons()
-            st.success("✨ Consolidação concluída com sucesso!")
+            st.success("✨ Processamento concluído!")
 
-# SE OS DADOS JÁ FORAM PROCESSADOS, EXIBE NA TELA SEM SUMIR
 if st.session_state.df_consolidado_final is not None:
     st.write("📊 **Prévia da Tabela Consolidada:**")
     st.dataframe(st.session_state.df_consolidado_final, use_container_width=True)
